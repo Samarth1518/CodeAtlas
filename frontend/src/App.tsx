@@ -97,6 +97,7 @@ export default function App() {
 
   // Phase 5: Semantic search & Vector Index state
   const [isBuildingIndex, setIsBuildingIndex]     = useState(false)
+  const [indexingProgress, setIndexingProgress]   = useState<{ processed: number; total: number } | null>(null)
   const [indexError, setIndexError]               = useState<string | null>(null)
   const [indexSummary, setIndexSummary]           = useState<IndexSummary | null>(null)
   const [searchQuery, setSearchQuery]             = useState('')
@@ -306,25 +307,42 @@ export default function App() {
     if (!result) return
 
     setIsBuildingIndex(true)
+    setIndexingProgress(null)
     setIndexError(null)
     setIndexSummary(null)
     setSearchResults(null)
 
+    const onProgress = (p: { chunks_processed: number; total_chunks: number }) => {
+      setIndexingProgress({ processed: p.chunks_processed, total: p.total_chunks })
+    }
+
     try {
       let data
       if (sourceFiles.length > 0) {
-        data = await buildSearchIndex(result.repo_url, sourceFiles.map(f => ({
-          path: f.path,
-          content: f.content,
-          language: f.language,
-        })))
+        data = await buildSearchIndex(
+          result.repo_url,
+          sourceFiles.map(f => ({
+            path: f.path,
+            content: f.content,
+            language: f.language,
+          })),
+          undefined,
+          undefined,
+          onProgress
+        )
       } else {
         const eligible = result.tree
           ?.filter((item: RepoTreeItem) => item.type === 'file')
           .slice(0, 20)
           .map((item: RepoTreeItem) => item.path) ?? []
 
-        data = await buildSearchIndex(result.repo_url, undefined, eligible, result.default_branch)
+        data = await buildSearchIndex(
+          result.repo_url,
+          undefined,
+          eligible,
+          result.default_branch,
+          onProgress
+        )
       }
 
       if (data.success) {
@@ -334,6 +352,7 @@ export default function App() {
       }
     } finally {
       setIsBuildingIndex(false)
+      setIndexingProgress(null)
     }
   }
 
@@ -748,7 +767,12 @@ export default function App() {
                     aria-busy={isBuildingIndex}
                   >
                     {isBuildingIndex ? (
-                      <><span className="spinner" aria-hidden="true" />Embedding & Indexing…</>
+                      <>
+                        <span className="spinner" aria-hidden="true" />
+                        {indexingProgress && indexingProgress.total > 0
+                          ? `Indexing (${indexingProgress.processed}/${indexingProgress.total})…`
+                          : 'Embedding & Indexing…'}
+                      </>
                     ) : indexSummary ? (
                       '✓ Search Index Ready (Rebuild)'
                     ) : (

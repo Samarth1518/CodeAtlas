@@ -20,6 +20,7 @@ from services.github import GitHubAPIError
 class IndexEndpointTestCase(unittest.TestCase):
     def setUp(self):
         self.app = create_app()
+        self.app.config["TESTING"] = True
         self.client = self.app.test_client()
 
         # Mock embedding model
@@ -133,6 +134,61 @@ class IndexEndpointTestCase(unittest.TestCase):
         }
         resp = self.client.post("/api/index/build", json=payload)
         self.assertEqual(resp.status_code, 403)
+
+    def test_index_status_missing_repo_url(self):
+        resp = self.client.get("/api/index/status")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_index_status_not_indexed(self):
+        resp = self.client.get("/api/index/status?repo_url=https://github.com/nonexistent/repo")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertTrue(data["success"])
+        self.assertEqual(data["status"], "not_indexed")
+
+    def test_index_status_after_build(self):
+        payload = {
+            "repo_url": "https://github.com/owner/status-test-repo",
+            "files": [{"path": "app.py", "content": "print('hello')"}],
+        }
+        build_resp = self.client.post("/api/index/build", json=payload)
+        self.assertEqual(build_resp.status_code, 200)
+
+        status_resp = self.client.get("/api/index/status?repo_url=https://github.com/owner/status-test-repo")
+        self.assertEqual(status_resp.status_code, 200)
+        data = status_resp.get_json()
+        self.assertTrue(data["success"])
+        self.assertEqual(data["status"], "ready")
+        self.assertIn("summary", data)
+        self.assertEqual(data["summary"]["files_processed"], 1)
+
+    def test_async_background_build_and_status_polling(self):
+        import time
+        payload = {
+            "repo_url": "https://github.com/owner/async-test-repo",
+            "files": [{"path": "main.py", "content": "def main(): pass"}],
+            "sync": False,
+        }
+        self.app.config["TESTING"] = False
+        try:
+            build_resp = self.client.post("/api/index/build", json=payload)
+            self.assertIn(build_resp.status_code, (200, 202))
+            data = build_resp.get_json()
+            self.assertTrue(data["success"])
+            self.assertEqual(data["status"], "indexing")
+
+            # Wait for background thread to complete
+            for _ in range(20):
+                time.sleep(0.05)
+                status_resp = self.client.get("/api/index/status?repo_url=https://github.com/owner/async-test-repo")
+                s_data = status_resp.get_json()
+                if s_data.get("status") == "ready":
+                    break
+
+            self.assertEqual(s_data["status"], "ready")
+            self.assertIsNotNone(s_data["summary"])
+        finally:
+            self.app.config["TESTING"] = True
 
 
 if __name__ == "__main__":

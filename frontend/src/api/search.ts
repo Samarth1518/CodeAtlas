@@ -1,6 +1,6 @@
 /**
  * api/search.ts
- * Client for index building and semantic code search endpoints.
+ * Client for index building, background index status, and semantic code search endpoints.
  */
 import { API_BASE } from './config'
 
@@ -10,6 +10,21 @@ export interface IndexSummary {
   files_processed: number
   chunks_indexed: number
   languages: Record<string, number>
+}
+
+export interface IndexStatusProgress {
+  chunks_processed: number
+  total_chunks: number
+  percent: number
+}
+
+export interface IndexStatusResponse {
+  success: boolean
+  repo_url: string
+  status: 'not_indexed' | 'indexing' | 'ready' | 'failed'
+  progress?: IndexStatusProgress | null
+  summary?: IndexSummary | null
+  error?: string | null
 }
 
 export interface BuildIndexSuccess {
@@ -52,11 +67,26 @@ export type SearchResult = SearchSuccess | SearchFailure
 
 // ── API calls ─────────────────────────────────────────────────────────────────
 
+/**
+ * Fetches the real-time background status of a repository vector index.
+ */
+export async function getIndexStatus(repoUrl: string): Promise<IndexStatusResponse> {
+  const res = await fetch(`${API_BASE}/api/index/status?repo_url=${encodeURIComponent(repoUrl)}`)
+  if (!res.ok) {
+    throw new Error(`Failed to fetch index status (HTTP ${res.status})`)
+  }
+  return res.json()
+}
+
+/**
+ * Triggers vector indexing and polls background progress until completion.
+ */
 export async function buildSearchIndex(
   repoUrl: string,
   files?: Array<{ path: string; content: string; language?: string | null }>,
   paths?: string[],
-  ref?: string
+  ref?: string,
+  onProgress?: (progress: IndexStatusProgress) => void
 ): Promise<BuildIndexResult> {
   let res: Response
 
@@ -77,7 +107,7 @@ export async function buildSearchIndex(
     }
   }
 
-  let data: unknown
+  let data: any
   try {
     data = await res.json()
   } catch {
@@ -87,15 +117,54 @@ export async function buildSearchIndex(
     }
   }
 
-  if (!res.ok) {
-    const serverError =
-      typeof data === 'object' && data !== null && 'error' in data
-        ? String((data as Record<string, unknown>).error)
-        : `Server error: HTTP ${res.status}`
+  if (!res.ok || !data.success) {
+    const serverError = data?.error || `Server error: HTTP ${res.status}`
     return { success: false, error: serverError }
   }
 
-  return data as BuildIndexResult
+  // If already ready immediately (e.g. empty or sync mode)
+  if (data.status === 'ready' && data.summary) {
+    return {
+      success: true,
+      repo_url: repoUrl,
+      summary: data.summary,
+    }
+  }
+
+  // Poll status endpoint every 1.5 seconds until ready or failed
+  const maxPolls = 120 // up to 3 minutes
+  for (let i = 0; i < maxPolls; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 1500))
+
+    try {
+      const statusRes = await getIndexStatus(repoUrl)
+      if (statusRes.progress && onProgress) {
+        onProgress(statusRes.progress)
+      }
+
+      if (statusRes.status === 'ready' && statusRes.summary) {
+        return {
+          success: true,
+          repo_url: repoUrl,
+          summary: statusRes.summary,
+        }
+      }
+
+      if (statusRes.status === 'failed') {
+        return {
+          success: false,
+          error: statusRes.error || 'Indexing failed in background.',
+        }
+      }
+    } catch {
+      // Continue polling on transient network hiccup
+    }
+  }
+
+  return {
+    success: false,
+    error: 'Indexing operation timed out while waiting for background processing.',
+  }
 }
 
 export async function searchCode(
@@ -118,7 +187,7 @@ export async function searchCode(
   } catch {
     return {
       success: false,
-      error: 'Could not reach the CodeAtlas server. Make sure the backend is running.',
+      error: 'Could not reach the CodeAtlas search service.',
     }
   }
 
@@ -128,7 +197,7 @@ export async function searchCode(
   } catch {
     return {
       success: false,
-      error: `Server returned an unexpected response (HTTP ${res.status}).`,
+      error: `Search service returned an invalid response (HTTP ${res.status}).`,
     }
   }
 
@@ -136,7 +205,7 @@ export async function searchCode(
     const serverError =
       typeof data === 'object' && data !== null && 'error' in data
         ? String((data as Record<string, unknown>).error)
-        : `Server error: HTTP ${res.status}`
+        : `Search error: HTTP ${res.status}`
     return { success: false, error: serverError }
   }
 
