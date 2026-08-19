@@ -71,6 +71,86 @@ function markdownToHtml(md: string): string {
   return html
 }
 
+/**
+ * Prioritizes important files (manifests, entry points, configuration) before
+ * taking the top N files from the repository tree for content retrieval.
+ */
+function getPrioritizedFiles(tree: RepoTreeItem[] | undefined, limit: number = 20): string[] {
+  if (!tree || tree.length === 0) return []
+
+  const fileItems = tree.filter(item => item.type === 'file')
+  if (fileItems.length <= limit) {
+    return fileItems.map(i => i.path)
+  }
+
+  const manifestBasenames = new Set([
+    'package.json',
+    'requirements.txt',
+    'setup.py',
+    'pyproject.toml',
+    'pipfile',
+    'cargo.toml',
+    'go.mod',
+    'gemfile',
+    'composer.json',
+    'pom.xml',
+    'build.gradle',
+    'build.gradle.kts',
+    'mix.exs',
+  ])
+
+  const entryBasenames = new Set([
+    'main.py',
+    'app.py',
+    'index.ts',
+    'index.js',
+    'index.tsx',
+    'index.jsx',
+    'main.ts',
+    'main.js',
+    'main.tsx',
+    'main.jsx',
+    'app.tsx',
+    'app.jsx',
+    'app.vue',
+    'server.js',
+    'server.ts',
+    'lib.rs',
+    'main.rs',
+    'main.go',
+    'readme.md',
+    'license',
+  ])
+
+  function getFileScore(path: string): number {
+    const filename = path.split('/').pop()?.toLowerCase() || ''
+
+    // Priority 1: Known dependency manifests
+    if (manifestBasenames.has(filename)) return 100
+
+    // Priority 2: Primary application entry points
+    if (entryBasenames.has(filename)) return 80
+
+    // Priority 3: Root & shallow files (depth <= 2)
+    const depth = path.split('/').length
+    if (depth <= 2) return 50 - depth
+
+    return 10 - Math.min(depth, 10)
+  }
+
+  // Sort by score descending; preserve alphabetical order for equal scores
+  const sorted = [...fileItems].sort((a, b) => {
+    const scoreA = getFileScore(a.path)
+    const scoreB = getFileScore(b.path)
+    if (scoreA !== scoreB) {
+      return scoreB - scoreA
+    }
+    return a.path.localeCompare(b.path)
+  })
+
+  return sorted.slice(0, limit).map(item => item.path)
+}
+
 // ── Component ─────────────────────────────────────────────────────────────────
 export default function App() {
   const [url, setUrl]                             = useState('')
@@ -231,10 +311,7 @@ export default function App() {
   async function handleFetchContents() {
     if (!result?.tree) return
 
-    const eligible = result.tree
-      .filter((item: RepoTreeItem) => item.type === 'file')
-      .slice(0, 20)
-      .map((item: RepoTreeItem) => item.path)
+    const eligible = getPrioritizedFiles(result.tree, 20)
 
     if (eligible.length === 0) return
 
@@ -280,10 +357,7 @@ export default function App() {
           language: f.language,
         })))
       } else {
-        const eligible = result.tree
-          ?.filter((item: RepoTreeItem) => item.type === 'file')
-          .slice(0, 20)
-          .map((item: RepoTreeItem) => item.path) ?? []
+        const eligible = getPrioritizedFiles(result.tree, 20)
 
         data = await generateChunks(result.repo_url, undefined, eligible, result.default_branch)
       }
@@ -331,10 +405,7 @@ export default function App() {
           onProgress
         )
       } else {
-        const eligible = result.tree
-          ?.filter((item: RepoTreeItem) => item.type === 'file')
-          .slice(0, 20)
-          .map((item: RepoTreeItem) => item.path) ?? []
+        const eligible = getPrioritizedFiles(result.tree, 20)
 
         data = await buildSearchIndex(
           result.repo_url,
