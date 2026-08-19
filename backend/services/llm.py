@@ -101,9 +101,9 @@ class OpenAICompatibleProvider(LLMProvider):
         model: Optional[str] = None,
         base_url: Optional[str] = None,
     ):
-        self._api_key = api_key or os.getenv("LLM_API_KEY", "")
-        self._model = model or os.getenv("LLM_MODEL", DEFAULT_MODEL)
-        self._base_url = base_url or os.getenv("LLM_BASE_URL", DEFAULT_BASE_URL)
+        self._api_key = api_key if api_key is not None else os.getenv("LLM_API_KEY", "")
+        self._model = model if model is not None else os.getenv("LLM_MODEL", DEFAULT_MODEL)
+        self._base_url = base_url if base_url is not None else os.getenv("LLM_BASE_URL", DEFAULT_BASE_URL)
 
     def _build_context_block(
         self,

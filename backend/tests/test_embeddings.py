@@ -46,11 +46,20 @@ class EmbeddingsServiceTestCase(unittest.TestCase):
         embeddings = embed_texts(texts)
         self.assertEqual(embeddings.shape, (2, EMBEDDING_DIMENSION))
         self.assertEqual(embeddings.dtype, np.float32)
+        # Verify memory optimization parameters
+        self.mock_model.encode.assert_called_once()
+        _, kwargs = self.mock_model.encode.call_args
+        self.assertEqual(kwargs.get("batch_size"), 8)
+        self.assertTrue(kwargs.get("normalize_embeddings"))
+        self.mock_model.eval.assert_called()
+        self.assertEqual(self.mock_model.max_seq_length, 256)
 
     def test_embed_query_valid(self):
         q_vec = embed_query("how to authenticate")
         self.assertEqual(q_vec.shape, (EMBEDDING_DIMENSION,))
         self.assertEqual(q_vec.dtype, np.float32)
+        _, kwargs = self.mock_model.encode.call_args
+        self.assertEqual(kwargs.get("batch_size"), 8)
 
     def test_embed_query_empty_raises_value_error(self):
         with self.assertRaises(ValueError):
