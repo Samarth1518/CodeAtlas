@@ -4,3 +4,4 @@ python-dotenv==1.0.1
 numpy>=1.26.0
 sentence-transformers>=3.0.0
 openai>=1.0.0
+gunicorn
