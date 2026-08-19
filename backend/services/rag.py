@@ -67,13 +67,25 @@ def answer_question(
 
     top_k = max(1, min(int(top_k), _MAX_CHUNKS))
 
-    # 2. Embed the question
+    # 2. Check if repository vector index exists
+    index_data = default_vector_store._load_repo_index(repo_url)
+    if not index_data or len(index_data.get("metadata", [])) == 0:
+        return {
+            "answer": (
+                "**Search Index Not Found**\n\n"
+                "The vector search index for this repository has not been built yet or is no longer available in server memory.\n\n"
+                "Please click **⚡ Build Search Index** in the Semantic Search section above so that I can retrieve and analyze the relevant code chunks."
+            ),
+            "sources": [],
+        }
+
+    # 3. Embed the question
     try:
         query_embedding = embed_query(question)
     except Exception as exc:
         raise RuntimeError(f"Failed to generate question embedding: {exc}") from exc
 
-    # 3. Search vector index
+    # 4. Search vector index
     try:
         raw_results = default_vector_store.search(
             repo_url=repo_url,
@@ -84,10 +96,10 @@ def answer_question(
     except Exception as exc:
         raise RuntimeError(f"Vector store search failed: {exc}") from exc
 
-    # 4. Deduplicate by chunk_id (keep highest-scored occurrence)
+    # 5. Deduplicate by chunk_id (keep highest-scored occurrence)
     chunks = _deduplicate_chunks(raw_results)
 
-    # 5. Generate grounded answer
+    # 6. Generate grounded answer
     # Extract repository full name for prompt context (e.g. "owner/repo")
     repo_display = _extract_repo_name(repo_url)
 
@@ -97,7 +109,7 @@ def answer_question(
         repository=repo_display,
     )
 
-    # 6. Build source citations (exclude raw content to keep response lean)
+    # 7. Build source citations (exclude raw content to keep response lean)
     sources = _build_sources(chunks)
 
     return {

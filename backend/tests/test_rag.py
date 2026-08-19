@@ -155,8 +155,31 @@ class TestAnswerQuestion(unittest.TestCase):
         set_llm_provider(None)
 
     def _mock_vector_search(self, results):
-        patcher = patch("services.rag.default_vector_store.search", return_value=results)
-        return patcher
+        index_data = {"metadata": [{"chunk_id": "c1"}], "embeddings": np.ones((1, 384))}
+        patcher_search = patch("services.rag.default_vector_store.search", return_value=results)
+        patcher_load = patch("services.rag.default_vector_store._load_repo_index", return_value=index_data)
+
+        class CombinedContext:
+            def __enter__(self_ctx):
+                patcher_search.__enter__()
+                patcher_load.__enter__()
+            def __exit__(self_ctx, *args):
+                patcher_search.__exit__(*args)
+                patcher_load.__exit__(*args)
+
+        return CombinedContext()
+
+    def test_unindexed_repo_returns_helpful_message(self):
+        """When vector store index does not exist, returns clear action without calling LLM."""
+        with patch("services.rag.default_vector_store._load_repo_index", return_value=None):
+            result = answer_question(
+                repo_url="https://github.com/owner/unindexed-repo",
+                question="How does auth work?",
+            )
+        self.assertIn("Search Index Not Found", result["answer"])
+        self.assertIn("Build Search Index", result["answer"])
+        self.assertEqual(result["sources"], [])
+        self._mock_llm.generate.assert_not_called()
 
     def test_successful_answer(self):
         """Full pipeline returns answer and sources."""
