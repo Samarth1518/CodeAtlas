@@ -25,6 +25,132 @@ def _normalize_repo_key(repo_url: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]", "_", clean).lower()
 
 
+_STOP_WORDS = {
+    "what", "when", "where", "which", "who", "whom", "whose", "why", "how",
+    "the", "and", "or", "not", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "can", "could", "should", "would",
+    "for", "with", "about", "against", "between", "into", "through", "during",
+    "before", "after", "above", "below", "to", "from", "up", "down", "in", "out",
+    "on", "off", "over", "under", "again", "further", "then", "once", "here",
+    "there", "all", "any", "both", "each", "few", "more", "most", "other",
+    "some", "such", "no", "nor", "too", "very", "will", "just",
+    "handles", "handle", "request", "requests", "return", "returns", "code",
+    "show", "find", "tell", "explain", "where", "which",
+}
+
+_PATH_RE = re.compile(r"(/[a-zA-Z0-9_\-./]+)")
+_FILENAME_RE = re.compile(r"\b([a-zA-Z0-9_\-]+\.[a-zA-Z0-9]{1,8})\b")
+_CODE_IDENTIFIER_RE = re.compile(r"\b([a-zA-Z_][a-zA-Z0-9_]{2,})\b")
+_QUOTED_RE = re.compile(r"[`'\"]([^`'\"]+)[`'\"]")
+
+
+def _extract_query_identifiers(query: str) -> List[str]:
+    """
+    Extracts distinct code identifiers (API paths, filenames, snake_case/camelCase
+    tokens, and quoted terms) from a natural language query.
+    """
+    if not query:
+        return []
+
+    identifiers: List[str] = []
+    seen = set()
+
+    def _add(token: str):
+        t = token.strip()
+        if t and len(t) >= 2 and t.lower() not in seen and t.lower() not in _STOP_WORDS:
+            seen.add(t.lower())
+            identifiers.append(t)
+
+    # 1. Quoted/backticked strings
+    for m in _QUOTED_RE.finditer(query):
+        _add(m.group(1))
+
+    # 2. Paths (e.g. /api/chat, /v1/index)
+    for m in _PATH_RE.finditer(query):
+        val = m.group(1).rstrip("?.,;!):")
+        if len(val) >= 2:
+            _add(val)
+
+    # 3. Filenames (e.g. app.py, vector_store.py)
+    for m in _FILENAME_RE.finditer(query):
+        _add(m.group(1))
+
+    # 4. Code identifiers (e.g. function_name, ClassName)
+    for m in _CODE_IDENTIFIER_RE.finditer(query):
+        token = m.group(1)
+        # Check if identifier has distinctive code casing/characters (underscore or mixed case)
+        if "_" in token or any(c.isupper() for c in token[1:]) or token.isupper():
+            _add(token)
+        elif len(token) >= 4 and token.lower() not in _STOP_WORDS:
+            _add(token)
+
+    return identifiers
+
+
+def _compute_identifier_boost(
+    query_text: Optional[str],
+    metadata: List[Dict[str, Any]],
+) -> np.ndarray:
+    """
+    Calculates exact-match relevance boosts for each chunk based on extracted query identifiers.
+    """
+    n = len(metadata)
+    boosts = np.zeros(n, dtype=np.float32)
+    if not query_text or n == 0:
+        return boosts
+
+    identifiers = _extract_query_identifiers(query_text)
+    if not identifiers:
+        return boosts
+
+    for i, chunk in enumerate(metadata):
+        content = chunk.get("content", "")
+        file_path = chunk.get("file_path", "")
+        chunk_boost = 0.0
+
+        for ident in identifiers:
+            ident_lower = ident.lower()
+            content_lower = content.lower()
+            file_path_lower = file_path.lower()
+
+            # Exact path or route match (e.g. /api/chat)
+            if ident.startswith("/"):
+                if ident in content or ident_lower in content_lower:
+                    chunk_boost += 0.25
+                elif ident in file_path or ident_lower in file_path_lower:
+                    chunk_boost += 0.15
+
+            # Filename match (e.g. app.py, vector_store.py)
+            elif "." in ident and (ident_lower == Path(file_path).name.lower() or ident_lower in file_path_lower):
+                chunk_boost += 0.20
+
+            # Function / route / class definition or symbol match
+            else:
+                # Direct presence in file path
+                if ident_lower in file_path_lower:
+                    chunk_boost += 0.10
+
+                # Def or class or route declaration in content
+                def_patterns = [
+                    f"def {ident}",
+                    f"class {ident}",
+                    f"@{ident}",
+                    f'"{ident}"',
+                    f"'{ident}'",
+                    f"`{ident}`",
+                    f"/{ident}",
+                ]
+                if any(p.lower() in content_lower for p in def_patterns):
+                    chunk_boost += 0.20
+                elif re.search(rf"\b{re.escape(ident)}\b", content, re.IGNORECASE):
+                    chunk_boost += 0.08
+
+        # Cap boost per chunk so semantic similarity remains the primary foundation
+        boosts[i] = min(0.35, chunk_boost)
+
+    return boosts
+
+
 class LocalVectorStore:
     """
     Local persistent vector store managing embedding matrices and metadata per repository.
@@ -151,17 +277,20 @@ class LocalVectorStore:
         repo_url: str,
         query_embedding: np.ndarray,
         top_k: int = 5,
+        query_text: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Performs cosine similarity search against the repository index.
+        Performs cosine similarity search against the repository index, enhanced
+        with exact identifier boosting when queries reference specific paths, filenames, or symbols.
 
         Args:
             repo_url: Repository identifier to search within.
             query_embedding: 1D numpy array representing the normalized query vector.
             top_k: Maximum number of ranked results to return.
+            query_text: Optional original text query for identifier boosting.
 
         Returns:
-            List of matching records ordered by descending similarity score.
+            List of matching records ordered by descending relevance score.
         """
         index_data = self._load_repo_index(repo_url)
         if not index_data:
@@ -177,31 +306,45 @@ class LocalVectorStore:
         if q_vec.ndim != 1 or len(q_vec) == 0:
             return []
 
-        # Cosine similarity for L2-normalized vectors: dot product
-        # If norms might differ, explicitly compute cosine similarity:
+        # Cosine similarity for L2-normalized vectors
         emb_norms = np.linalg.norm(embeddings, axis=1)
         q_norm = np.linalg.norm(q_vec)
 
         if q_norm == 0:
             return []
 
-        # Avoid divide-by-zero
         safe_norms = np.where(emb_norms == 0, 1e-10, emb_norms)
         similarities = np.dot(embeddings, q_vec) / (safe_norms * q_norm)
-        # Clip numerical precision artifacts to [-1.0, 1.0]
         similarities = np.clip(similarities, -1.0, 1.0)
 
-        # Get top-k indices sorted descending
-        k = min(top_k, len(similarities))
+        # Apply exact identifier boost if query text is provided
+        if query_text:
+            boosts = _compute_identifier_boost(query_text, metadata)
+            final_scores = np.clip(similarities + boosts, -1.0, 1.0)
+        else:
+            final_scores = similarities
+
+        # Filter completely negative correlation (noise)
+        valid_mask = final_scores >= 0.0
+        if not np.any(valid_mask):
+            # If all are negative, take top result if any exists
+            valid_indices = np.arange(len(final_scores))
+        else:
+            valid_indices = np.where(valid_mask)[0]
+
+        # Rank valid results descending by score
+        ranked_order = np.argsort(-final_scores[valid_indices])
+        sorted_indices = valid_indices[ranked_order]
+
+        k = min(top_k, len(sorted_indices))
         if k <= 0:
             return []
 
-        top_indices = np.argsort(-similarities)[:k]
+        top_indices = sorted_indices[:k]
 
         results: List[Dict[str, Any]] = []
         for idx in top_indices:
-            score = float(similarities[idx])
-            # Round score to 4 decimals for clean API response
+            score = float(final_scores[idx])
             clean_score = round(score, 4)
             record = metadata[idx]
 

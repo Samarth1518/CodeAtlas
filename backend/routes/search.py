@@ -129,6 +129,7 @@ def search():
             repo_url=repo_url,
             query_embedding=query_emb,
             top_k=top_k,
+            query_text=query,
         )
     except Exception as exc:
         return (

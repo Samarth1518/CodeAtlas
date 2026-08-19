@@ -24,6 +24,8 @@ class LiveIntegrationTestCase(unittest.TestCase):
             "/api/repos/analyze",
             json={"repo_url": "https://github.com/octocat/Hello-World"},
         )
+        if response.status_code == 503:
+            self.skipTest("GitHub API unreachable or timed out from local environment.")
         self.assertEqual(response.status_code, 200)
         data = response.get_json()
         self.assertTrue(data["success"])

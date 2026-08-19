@@ -79,6 +79,7 @@ def answer_question(
             repo_url=repo_url,
             query_embedding=query_embedding,
             top_k=top_k,
+            query_text=question,
         )
     except Exception as exc:
         raise RuntimeError(f"Vector store search failed: {exc}") from exc

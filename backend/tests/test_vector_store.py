@@ -116,6 +116,70 @@ class VectorStoreTestCase(unittest.TestCase):
         results = self.store.search(repo_url, np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32))
         self.assertEqual(results, [])
 
+    def test_exact_path_identifier_boosting(self):
+        repo_url = "https://github.com/owner/routes-repo"
+        chunks = [
+            {
+                "chunk_id": "c_generic",
+                "file_path": "app.py",
+                "content": "@app.route('/api/generic')\ndef generic(): pass",
+            },
+            {
+                "chunk_id": "c_chat",
+                "file_path": "app.py",
+                "content": "@app.route('/api/chat', methods=['POST'])\ndef chat(): pass",
+            },
+        ]
+        # Vectors: orthogonal
+        embeddings = np.array([
+            [1.0, 0.0],  # generic has higher dot product with query vector [0.8, 0.6] (0.8 vs 0.6)
+            [0.0, 1.0],  # chat has lower dot product (0.6)
+        ], dtype=np.float32)
+        self.store.build_index(repo_url, chunks, embeddings)
+
+        query_vec = np.array([0.8, 0.6], dtype=np.float32)
+
+        # Without query_text: generic wins by base cosine similarity (0.8 vs 0.6)
+        res_no_boost = self.store.search(repo_url, query_vec, top_k=2)
+        self.assertEqual(res_no_boost[0]["chunk_id"], "c_generic")
+
+        # With query_text containing "/api/chat": c_chat is boosted to rank #1
+        res_boosted = self.store.search(
+            repo_url,
+            query_vec,
+            top_k=2,
+            query_text="What endpoint handles POST requests to /api/chat?",
+        )
+        self.assertEqual(res_boosted[0]["chunk_id"], "c_chat")
+        self.assertGreater(res_boosted[0]["score"], res_boosted[1]["score"])
+
+    def test_exact_function_identifier_boosting(self):
+        repo_url = "https://github.com/owner/func-repo"
+        chunks = [
+            {
+                "chunk_id": "c_other",
+                "file_path": "utils.py",
+                "content": "def helper(): pass",
+            },
+            {
+                "chunk_id": "c_target",
+                "file_path": "chunker.py",
+                "content": "def process_repository_files(repo, files): pass",
+            },
+        ]
+        embeddings = np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
+        self.store.build_index(repo_url, chunks, embeddings)
+
+        query_vec = np.array([0.7, 0.7], dtype=np.float32)
+        results = self.store.search(
+            repo_url,
+            query_vec,
+            top_k=2,
+            query_text="Explain how process_repository_files processes chunks",
+        )
+        self.assertEqual(results[0]["chunk_id"], "c_target")
+        self.assertGreater(results[0]["score"], results[1]["score"])
+
 
 if __name__ == "__main__":
     unittest.main()
