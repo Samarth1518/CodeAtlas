@@ -190,6 +190,33 @@ class IndexEndpointTestCase(unittest.TestCase):
         finally:
             self.app.config["TESTING"] = True
 
+    def test_async_background_build_failure_reporting(self):
+        import time
+        self.mock_model.encode.side_effect = RuntimeError("Simulated FastEmbed memory/runtime error")
+        self.mock_model.embed.side_effect = RuntimeError("Simulated FastEmbed memory/runtime error")
+        payload = {
+            "repo_url": "https://github.com/owner/failure-test-repo",
+            "files": [{"path": "fail.py", "content": "def fail(): pass"}],
+            "sync": False,
+        }
+        self.app.config["TESTING"] = False
+        try:
+            build_resp = self.client.post("/api/index/build", json=payload)
+            self.assertIn(build_resp.status_code, (200, 202))
+
+            # Wait for background thread to encounter failure
+            for _ in range(20):
+                time.sleep(0.05)
+                status_resp = self.client.get("/api/index/status?repo_url=https://github.com/owner/failure-test-repo")
+                s_data = status_resp.get_json()
+                if s_data.get("status") == "failed":
+                    break
+
+            self.assertEqual(s_data["status"], "failed")
+            self.assertIn("Simulated FastEmbed", s_data.get("error", ""))
+        finally:
+            self.app.config["TESTING"] = True
+
 
 if __name__ == "__main__":
     unittest.main()

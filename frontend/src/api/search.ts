@@ -131,13 +131,19 @@ export async function buildSearchIndex(
     }
   }
 
-  // Poll status endpoint every 1.5 seconds until ready or failed
-  const maxPolls = 120 // up to 3 minutes
+  // Poll status endpoint every 1.5 seconds as long as backend reports status === 'indexing'
+  // Up to 600 iterations (15 minutes), timeout only if stalled with zero progress for 4 minutes
+  const pollIntervalMs = 1500
+  const maxPolls = 600 // up to 15 minutes for large repositories on CPU
+  let lastProcessedCount = -1
+  let staleCount = 0
+
   for (let i = 0; i < maxPolls; i++) {
-    await new Promise((resolve) => setTimeout(resolve, 1500))
+    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs))
 
     try {
       const statusRes = await getIndexStatus(repoUrl)
+
       if (statusRes.progress && onProgress) {
         onProgress(statusRes.progress)
       }
@@ -156,6 +162,23 @@ export async function buildSearchIndex(
           error: statusRes.error || 'Indexing failed in background.',
         }
       }
+
+      // Track progress to detect truly hung/dead tasks
+      const currentProcessed = statusRes.progress?.chunks_processed ?? 0
+      if (currentProcessed === lastProcessedCount) {
+        staleCount++
+      } else {
+        lastProcessedCount = currentProcessed
+        staleCount = 0
+      }
+
+      // If no chunks processed for 4 minutes (160 polls), consider hung
+      if (staleCount > 160) {
+        return {
+          success: false,
+          error: 'Indexing stalled: No progress received from backend for 4 minutes.',
+        }
+      }
     } catch {
       // Continue polling on transient network hiccup
     }
@@ -163,7 +186,7 @@ export async function buildSearchIndex(
 
   return {
     success: false,
-    error: 'Indexing operation timed out while waiting for background processing.',
+    error: 'Indexing operation exceeded the 15-minute maximum window.',
   }
 }
 
