@@ -1,0 +1,37 @@
+# ── Secrets & local config ──────────────────────────────
+# .env.example is safe to commit; .env is NOT.
+.env
+.env.local
+.env.*.local
+
+# ── Python runtime artifacts ─────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+.eggs/
+
+# ── Virtual environment ───────────────────────────────────
+venv/
+.venv/
+env/
+
+# ── Distribution / packaging ──────────────────────────────
+dist/
+build/
+
+# ── Testing & coverage ────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ── Editor ────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+
+# ── Local vector store storage ────────────────────────────
+storage/
+*.npy

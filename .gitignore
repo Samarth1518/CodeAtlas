@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+venv/
+.venv/
+env/
+
+# Secrets & environment
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Local vector store & artifacts
+storage/
+*.npy
+
+# Node & frontend
+node_modules/
+dist/
+.vite/
+
+# Testing & coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editor & OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

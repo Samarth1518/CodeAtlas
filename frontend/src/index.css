@@ -1,0 +1,62 @@
+/* ─── Reset ─────────────────────────────────────────── */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+/* ─── Design tokens ──────────────────────────────────── */
+:root {
+  /* Palette */
+  --bg-base:        #0a0e1a;
+  --bg-surface:     #111827;
+  --bg-card:        #1a2236;
+  --border:         #2a3a55;
+  --border-focus:   #4f8ef7;
+
+  /* Text */
+  --text-primary:   #f0f4ff;
+  --text-secondary: #8b9dc0;
+  --text-muted:     #4a5a7a;
+
+  /* Accent gradient */
+  --accent-from:    #4f8ef7;
+  --accent-to:      #9b5cee;
+
+  /* Status */
+  --error:          #f87171;
+  --error-bg:       rgba(248, 113, 113, 0.08);
+  --success:        #34d399;
+  --success-bg:     rgba(52, 211, 153, 0.08);
+
+  /* Typography */
+  --font:           'Inter', system-ui, -apple-system, sans-serif;
+
+  /* Spacing */
+  --radius-sm:      6px;
+  --radius-md:      12px;
+  --radius-lg:      20px;
+
+  /* Transitions */
+  --transition:     180ms ease;
+}
+
+/* ─── Base ───────────────────────────────────────────── */
+html {
+  font-size: 16px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  font-family: var(--font);
+  background-color: var(--bg-base);
+  color: var(--text-primary);
+  min-height: 100dvh;
+}
+
+#root {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
