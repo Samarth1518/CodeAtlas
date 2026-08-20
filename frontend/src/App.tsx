@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import React, { useState, useEffect, type FormEvent } from 'react'
 import './App.css'
 import { analyzeRepo, type AnalyzeSuccess, type RepoTreeItem } from './api/repos'
 import { fetchContents, type SourceFile } from './api/contents'
@@ -7,152 +7,123 @@ import { buildSearchIndex, searchCode, type IndexSummary, type SearchResultItem 
 import { chatWithRepository, type ChatSource } from './api/chat'
 import { analyzeInsights, type RepositoryInsights } from './api/insights'
 
-// ── Validation ────────────────────────────────────────────────────────────────
-const GITHUB_RE = /^https:\/\/github\.com\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\/?$/
+// ── Logo & Brand Icons ────────────────────────────────────────────────────────
+function BrandLogo({ size = 32 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 48 46"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      className="brand-logo-svg"
+      aria-hidden="true"
+    >
+      <path
+        fill="url(#brand-gradient)"
+        d="M25.946 44.938c-.664.845-2.021.375-2.021-.698V33.937a2.26 2.26 0 0 0-2.262-2.262H10.287c-.92 0-1.456-1.04-.92-1.788l7.48-10.471c1.07-1.497 0-3.578-1.842-3.578H1.237c-.92 0-1.456-1.04-.92-1.788L10.013.474c.214-.297.556-.474.92-.474h28.894c.92 0 1.456 1.04.92 1.788l-7.48 10.471c-1.07 1.498 0 3.579 1.842 3.579h11.377c.943 0 1.473 1.088.89 1.83L25.947 44.94z"
+      />
+      <defs>
+        <linearGradient id="brand-gradient" x1="0" y1="0" x2="48" y2="46" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stopColor="#818cf8" />
+          <stop offset="50%" stopColor="#6366f1" />
+          <stop offset="100%" stopColor="#a855f7" />
+        </linearGradient>
+      </defs>
+    </svg>
+  )
+}
 
-function validateUrl(raw: string): string | null {
-  const url = raw.trim()
-  if (!url) return 'Please enter a GitHub repository URL.'
-  if (!GITHUB_RE.test(url)) return 'URL must be in the format: https://github.com/owner/repository'
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function formatBytes(bytes: number | null | undefined): string {
+  if (bytes === null || bytes === undefined || isNaN(bytes)) return '—'
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function langClass(lang: string | null | undefined): string {
+  if (!lang) return ''
+  return `lang-${lang.toLowerCase().replace(/[^a-z0-9]/g, '')}`
+}
+
+function validateUrl(input: string): string | null {
+  const trimmed = input.trim()
+  if (!trimmed) return 'Please enter a GitHub repository URL.'
+  const pattern = /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?\/?$/
+  if (!pattern.test(trimmed)) {
+    return 'Please enter a valid public GitHub URL (e.g. https://github.com/owner/repo).'
+  }
   return null
 }
 
-function formatBytes(bytes: number | null): string {
-  if (bytes === null || bytes === undefined) return '—'
-  if (bytes === 0) return '0 B'
-  const k = 1024
-  const sizes = ['B', 'KB', 'MB', 'GB']
-  const i = Math.floor(Math.log(bytes) / Math.log(k))
-  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`
-}
-
-function langClass(language: string | null): string {
-  if (!language) return ''
-  return `language-${language.toLowerCase().replace(/[^a-z0-9]/g, '-')}`
-}
-
-/**
- * Minimal, safe Markdown → HTML converter for LLM answers.
- * Handles headings, bold, italic, inline code, fenced code blocks, and lists.
- * Does NOT use any external library to keep the bundle lean.
- */
 function markdownToHtml(md: string): string {
   let html = md
-    // Escape HTML entities first to prevent XSS
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-  // Fenced code blocks (``` ... ```)
-  html = html.replace(/```[\w]*\n?([\s\S]*?)```/g, (_m, code) =>
-    `<pre class="ai-code-block"><code>${code.trim()}</code></pre>`
-  )
-  // Headings
+  html = html.replace(/```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/g, (_m, lang, code) => {
+    const langBadge = lang ? `<span class="ai-code-lang">${lang}</span>` : ''
+    return `<div class="ai-code-block">${langBadge}<pre><code>${code.trim()}</code></pre></div>`
+  })
   html = html.replace(/^#### (.+)$/gm, '<h4>$1</h4>')
   html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>')
   html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>')
   html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>')
-  // Bold + italic
   html = html.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>')
   html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
   html = html.replace(/\*(.+?)\*/g, '<em>$1</em>')
-  // Inline code
   html = html.replace(/`([^`]+)`/g, '<code class="ai-inline-code">$1</code>')
-  // Unordered list items
   html = html.replace(/^\s*[-*] (.+)$/gm, '<li>$1</li>')
   html = html.replace(/(<li>.*<\/li>\n?)+/g, m => `<ul>${m}</ul>`)
-  // Ordered list items
   html = html.replace(/^\s*\d+\. (.+)$/gm, '<li>$1</li>')
-  // Horizontal rules
   html = html.replace(/^---$/gm, '<hr />')
-  // Paragraphs — wrap lines not already wrapped in block tags
   html = html.replace(/^(?!<[huplr]|<pre|<hr)(.+)$/gm, '<p>$1</p>')
-  // Collapse consecutive blank lines
   html = html.replace(/\n{3,}/g, '\n\n')
   return html
 }
 
-/**
- * Prioritizes important files (manifests, entry points, configuration) before
- * taking the top N files from the repository tree for content retrieval.
- */
 function getPrioritizedFiles(tree: RepoTreeItem[] | undefined, limit: number = 20): string[] {
   if (!tree || tree.length === 0) return []
-
   const fileItems = tree.filter(item => item.type === 'file')
-  if (fileItems.length <= limit) {
-    return fileItems.map(i => i.path)
-  }
+  if (fileItems.length <= limit) return fileItems.map(i => i.path)
 
-  const manifestBasenames = new Set([
-    'package.json',
-    'requirements.txt',
-    'setup.py',
-    'pyproject.toml',
-    'pipfile',
-    'cargo.toml',
-    'go.mod',
-    'gemfile',
-    'composer.json',
-    'pom.xml',
-    'build.gradle',
-    'build.gradle.kts',
-    'mix.exs',
-  ])
-
-  const entryBasenames = new Set([
-    'main.py',
-    'app.py',
-    'index.ts',
-    'index.js',
-    'index.tsx',
-    'index.jsx',
-    'main.ts',
-    'main.js',
-    'main.tsx',
-    'main.jsx',
-    'app.tsx',
-    'app.jsx',
-    'app.vue',
-    'server.js',
-    'server.ts',
-    'lib.rs',
-    'main.rs',
-    'main.go',
-    'readme.md',
-    'license',
-  ])
+  const manifestBasenames = new Set(['package.json', 'requirements.txt', 'setup.py', 'pyproject.toml', 'pipfile', 'cargo.toml', 'go.mod', 'gemfile', 'composer.json', 'pom.xml', 'build.gradle', 'build.gradle.kts', 'mix.exs'])
+  const entryBasenames = new Set(['main.py', 'app.py', 'index.ts', 'index.js', 'index.tsx', 'index.jsx', 'main.ts', 'main.js', 'main.tsx', 'main.jsx', 'app.tsx', 'app.jsx', 'app.vue', 'server.js', 'server.ts', 'lib.rs', 'main.rs', 'main.go', 'readme.md', 'license'])
 
   function getFileScore(path: string): number {
     const filename = path.split('/').pop()?.toLowerCase() || ''
-
-    // Priority 1: Known dependency manifests
     if (manifestBasenames.has(filename)) return 100
-
-    // Priority 2: Primary application entry points
     if (entryBasenames.has(filename)) return 80
-
-    // Priority 3: Root & shallow files (depth <= 2)
     const depth = path.split('/').length
     if (depth <= 2) return 50 - depth
-
     return 10 - Math.min(depth, 10)
   }
 
-  // Sort by score descending; preserve alphabetical order for equal scores
   const sorted = [...fileItems].sort((a, b) => {
     const scoreA = getFileScore(a.path)
     const scoreB = getFileScore(b.path)
-    if (scoreA !== scoreB) {
-      return scoreB - scoreA
-    }
+    if (scoreA !== scoreB) return scoreB - scoreA
     return a.path.localeCompare(b.path)
   })
-
   return sorted.slice(0, limit).map(item => item.path)
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
 export default function App() {
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => {
+    const saved = localStorage.getItem('codeatlas-theme')
+    if (saved === 'dark' || saved === 'light') return saved
+    return window.matchMedia?.('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
+  })
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme)
+    localStorage.setItem('codeatlas-theme', theme)
+  }, [theme])
+
+  const toggleTheme = () => setTheme(prev => (prev === 'dark' ? 'light' : 'dark'))
+
   const [url, setUrl]                             = useState('')
   const [error, setError]                         = useState<string | null>(null)
   const [apiError, setApiError]                   = useState<string | null>(null)
@@ -160,14 +131,12 @@ export default function App() {
   const [result, setResult]                       = useState<AnalyzeSuccess | null>(null)
   const [searchFilter, setSearchFilter]           = useState('')
 
-  // Phase 3: source content state
   const [isFetching, setIsFetching]               = useState(false)
   const [fetchError, setFetchError]               = useState<string | null>(null)
   const [sourceFiles, setSourceFiles]             = useState<SourceFile[]>([])
   const [selectedFile, setSelectedFile]           = useState<SourceFile | null>(null)
   const [fetchSummary, setFetchSummary]           = useState<{ fetched: number; skipped: number; errors: number } | null>(null)
 
-  // Phase 4: chunking & index state
   const [isChunking, setIsChunking]               = useState(false)
   const [chunkError, setChunkError]               = useState<string | null>(null)
   const [chunks, setChunks]                       = useState<CodeChunk[]>([])
@@ -175,7 +144,6 @@ export default function App() {
   const [selectedChunk, setSelectedChunk]         = useState<CodeChunk | null>(null)
   const [chunkSearchFilter, setChunkSearchFilter] = useState('')
 
-  // Phase 5: Semantic search & Vector Index state
   const [isBuildingIndex, setIsBuildingIndex]     = useState(false)
   const [indexingProgress, setIndexingProgress]   = useState<{ processed: number; total: number } | null>(null)
   const [indexError, setIndexError]               = useState<string | null>(null)
@@ -185,14 +153,12 @@ export default function App() {
   const [searchError, setSearchError]             = useState<string | null>(null)
   const [searchResults, setSearchResults]         = useState<SearchResultItem[] | null>(null)
 
-  // Phase 6: AI Codebase Assistant state
   const [chatQuestion, setChatQuestion]           = useState('')
   const [isAsking, setIsAsking]                   = useState(false)
   const [chatError, setChatError]                 = useState<string | null>(null)
   const [chatAnswer, setChatAnswer]               = useState<string | null>(null)
   const [chatSources, setChatSources]             = useState<ChatSource[]>([])
 
-  // Phase 7: Repository Insights state
   const [isAnalyzingInsights, setIsAnalyzingInsights] = useState(false)
   const [insightsError, setInsightsError]             = useState<string | null>(null)
   const [insights, setInsights]                       = useState<RepositoryInsights | null>(null)
@@ -217,6 +183,12 @@ export default function App() {
       setInsights(null)
       setInsightsError(null)
     }
+  }
+
+  function handleFillSample(sampleUrl: string) {
+    setUrl(sampleUrl)
+    if (error) setError(null)
+    if (apiError) setApiError(null)
   }
 
   async function handleSubmit(e: FormEvent) {
@@ -250,7 +222,6 @@ export default function App() {
     }
   }
 
-  // Phase 7: Analyze repository insights
   async function handleAnalyzeInsights() {
     if (!result) return
 
@@ -286,7 +257,6 @@ export default function App() {
     }
   }
 
-  // Phase 6: AI Codebase Q&A
   async function handleAskQuestion(e: FormEvent) {
     e.preventDefault()
     if (!result || !chatQuestion.trim()) return
@@ -307,12 +277,10 @@ export default function App() {
     }
   }
 
-  // Phase 3: Fetch source files
   async function handleFetchContents() {
     if (!result?.tree) return
 
     const eligible = getPrioritizedFiles(result.tree, 20)
-
     if (eligible.length === 0) return
 
     setIsFetching(true)
@@ -338,7 +306,6 @@ export default function App() {
     }
   }
 
-  // Phase 4: Generate Code Chunks
   async function handleGenerateChunks() {
     if (!result) return
 
@@ -358,7 +325,6 @@ export default function App() {
         })))
       } else {
         const eligible = getPrioritizedFiles(result.tree, 20)
-
         data = await generateChunks(result.repo_url, undefined, eligible, result.default_branch)
       }
 
@@ -376,7 +342,6 @@ export default function App() {
     }
   }
 
-  // Phase 5: Build Search Index
   async function handleBuildIndex() {
     if (!result) return
 
@@ -406,7 +371,6 @@ export default function App() {
         )
       } else {
         const eligible = getPrioritizedFiles(result.tree, 20)
-
         data = await buildSearchIndex(
           result.repo_url,
           undefined,
@@ -427,7 +391,6 @@ export default function App() {
     }
   }
 
-  // Phase 5: Perform Semantic Code Search
   async function handleSearch(e: FormEvent) {
     e.preventDefault()
     if (!result || !searchQuery.trim()) return
@@ -458,65 +421,354 @@ export default function App() {
   )
 
   return (
-    <>
-      {/* ── Sticky header ── */}
-      <header className="header">
-        <span className="header-logo">
-          <span className="header-logo-dot" aria-hidden="true" />
-          CodeAtlas
-        </span>
+    <div className="codeatlas-app">
+      {/* ── Futuristic Navbar ── */}
+      <header className="navbar">
+        <div className="navbar-container">
+          <div className="navbar-brand">
+            <BrandLogo size={32} />
+            <div className="brand-text-group">
+              <span className="brand-name">CodeAtlas</span>
+              <span className="brand-badge">Intelligence</span>
+            </div>
+          </div>
+
+          <div className="navbar-tagline-pill">
+            <span className="tagline-dot" aria-hidden="true" />
+            <span>Map Your Code. Master Your System.</span>
+          </div>
+
+          <div className="navbar-actions">
+            <a
+              href="https://github.com/Samarth1518/CodeAtlas"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="navbar-link-btn"
+              title="View CodeAtlas repository on GitHub"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z" />
+              </svg>
+              <span>GitHub</span>
+            </a>
+
+            <button
+              type="button"
+              className="theme-toggle-btn"
+              onClick={toggleTheme}
+              title={`Switch to ${theme === 'dark' ? 'Light' : 'Dark'} Mode`}
+              aria-label={`Switch to ${theme === 'dark' ? 'Light' : 'Dark'} Mode`}
+            >
+              {theme === 'dark' ? (
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <circle cx="12" cy="12" r="5" />
+                  <line x1="12" y1="1" x2="12" y2="3" />
+                  <line x1="12" y1="21" x2="12" y2="23" />
+                  <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
+                  <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
+                  <line x1="1" y1="12" x2="3" y2="12" />
+                  <line x1="21" y1="12" x2="23" y2="12" />
+                  <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
+                  <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
+                </svg>
+              ) : (
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+                </svg>
+              )}
+              <span className="theme-label">{theme === 'dark' ? 'Light' : 'Dark'}</span>
+            </button>
+          </div>
+        </div>
       </header>
 
-      <main className="app">
-        <section className="hero" aria-label="CodeAtlas hero">
+      <main className="main-content">
+        {/* ── Hero & Search Bar ── */}
+        <section className="hero-section" aria-label="CodeAtlas hero">
+          <div className="hero-badge">
+            <span className="badge-sparkle">✦</span>
+            <span>AI-POWERED CODEBASE INTELLIGENCE</span>
+          </div>
 
-          <div className="hero-icon" aria-hidden="true">🗺️</div>
-          <h1 className="hero-title">CodeAtlas</h1>
-          <p className="hero-subtitle">
-            Analyze any public GitHub repository with AI. Understand architecture,
-            discover patterns, and explore your codebase — instantly.
+          <h1 className="hero-main-title">
+            Map Your Code. <span className="title-gradient">Master Your System.</span>
+          </h1>
+
+          <p className="hero-description">
+            Transform any public GitHub repository into an interactive, AI-grounded architectural map.
+            Discover code topologies, explore semantic search, and query your system with zero hallucination.
           </p>
 
-          {/* ── Input card ── */}
-          <div className="card">
-            <form onSubmit={handleSubmit} noValidate>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
-                <label htmlFor="repo-url" className="input-label">GitHub Repository URL</label>
-                <div className="input-wrapper">
-                  <span className="input-icon" aria-hidden="true">🔗</span>
+          {/* ── Input Card ── */}
+          <div className="search-input-card">
+            <form onSubmit={handleSubmit} noValidate className="analyze-form">
+              <div className="input-field-group">
+                <div className="url-input-container">
+                  <span className="url-prefix-icon" aria-hidden="true">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+                      <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+                    </svg>
+                  </span>
                   <input
-                    id="repo-url" type="url"
-                    className={`url-input${error ? ' input-error' : ''}`}
+                    id="repo-url"
+                    type="url"
+                    className={`main-url-input${error ? ' input-error' : ''}`}
                     placeholder="https://github.com/owner/repository"
-                    value={url} onChange={handleChange}
-                    autoComplete="off" spellCheck={false} disabled={isLoading}
+                    value={url}
+                    onChange={handleChange}
+                    autoComplete="off"
+                    spellCheck={false}
+                    disabled={isLoading}
                     aria-describedby={error ? 'url-error' : apiError ? 'api-error' : result ? 'url-result' : undefined}
                     aria-invalid={!!(error || apiError)}
                   />
+                  {url && !isLoading && (
+                    <button
+                      type="button"
+                      className="clear-input-btn"
+                      onClick={() => setUrl('')}
+                      aria-label="Clear input"
+                    >
+                      ✕
+                    </button>
+                  )}
                 </div>
-                {error && (
-                  <p id="url-error" className="error-msg" role="alert">
-                    <span aria-hidden="true">⚠️</span>{error}
-                  </p>
-                )}
-                {apiError && (
-                  <p id="api-error" className="error-msg error-msg--api" role="alert">
-                    <span aria-hidden="true">🔴</span>{apiError}
-                  </p>
-                )}
-                <button id="analyze-btn" type="submit"
-                  className={`btn-analyze${isLoading ? ' btn-loading' : ''}`}
-                  disabled={isDisabled} aria-busy={isLoading}
+
+                <button
+                  id="analyze-btn"
+                  type="submit"
+                  className={`btn-hero-analyze${isLoading ? ' btn-loading' : ''}`}
+                  disabled={isDisabled}
+                  aria-busy={isLoading}
                 >
-                  {isLoading ? (<><span className="spinner" aria-hidden="true" />Analyzing…</>) : 'Analyze Repository'}
+                  {isLoading ? (
+                    <>
+                      <span className="spinner" aria-hidden="true" />
+                      <span>Mapping Codebase…</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>Analyze Repository</span>
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <line x1="5" y1="12" x2="19" y2="12" />
+                        <polyline points="12 5 19 12 12 19" />
+                      </svg>
+                    </>
+                  )}
                 </button>
               </div>
+
+              {error && (
+                <p id="url-error" className="form-error-msg" role="alert">
+                  <span aria-hidden="true">⚠️</span>{error}
+                </p>
+              )}
+              {apiError && (
+                <p id="api-error" className="form-error-msg form-error-msg--api" role="alert">
+                  <span aria-hidden="true">🔴</span>{apiError}
+                </p>
+              )}
             </form>
+
+            {/* Quick sample repository pills */}
+            <div className="sample-pills-row">
+              <span className="sample-label">Try popular repos:</span>
+              <div className="sample-pills">
+                {[
+                  { label: 'CodeAtlas', repo: 'https://github.com/Samarth1518/CodeAtlas' },
+                  { label: 'Flask', repo: 'https://github.com/pallets/flask' },
+                  { label: 'Express', repo: 'https://github.com/expressjs/express' },
+                  { label: 'Hello-World', repo: 'https://github.com/octocat/Hello-World' },
+                ].map((s) => (
+                  <button
+                    key={s.label}
+                    type="button"
+                    className="sample-pill"
+                    onClick={() => handleFillSample(s.repo)}
+                    disabled={isLoading}
+                  >
+                    {s.label}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
 
-          {/* ── Results ── */}
-          {result && (
-            <div id="url-result" className="result-panel" role="status" aria-live="polite">
+          {/* ── Homepage Atlas Map Centerpiece & Features (when !result) ── */}
+          {!result && (
+            <div className="homepage-atlas-container" aria-label="CodeAtlas system topology and capabilities">
+              {/* ── Visual Map Centerpiece ── */}
+              <div className="atlas-map-wrapper">
+                <div className="atlas-map-header">
+                  <div className="atlas-map-title-row">
+                    <span className="atlas-map-badge">✦ LIVE SYSTEM TOPOLOGY</span>
+                    <h2 className="atlas-map-title">The CodeAtlas Architectural Map</h2>
+                  </div>
+                  <p className="atlas-map-subtitle">
+                    An intelligent multi-dimensional map that indexes codebases, establishes semantic relationships, and grounds AI responses directly in your repository.
+                  </p>
+                </div>
+
+                <div className="atlas-canvas-container">
+                  {/* Radar & Orbital Rings */}
+                  <div className="atlas-radar-rings" aria-hidden="true">
+                    <div className="radar-ring radar-ring-1" />
+                    <div className="radar-ring radar-ring-2" />
+                    <div className="radar-ring radar-ring-3" />
+                    <div className="radar-sweep" />
+                  </div>
+
+                  {/* Central Intelligence Hub */}
+                  <div className="atlas-core-node">
+                    <div className="core-glow-pulse" />
+                    <div className="core-icon-container">
+                      <BrandLogo size={40} />
+                    </div>
+                    <span className="core-title">CodeAtlas Core</span>
+                    <span className="core-status-pill">● Embedding & RAG Hub</span>
+                  </div>
+
+                  {/* Constellation Nodes around Hub */}
+                  <div className="atlas-node node-frontend">
+                    <div className="node-icon">🌐</div>
+                    <div className="node-info">
+                      <span className="node-name">Client & Structure</span>
+                      <span className="node-desc">Recursive File Tree & AST Chunker</span>
+                    </div>
+                    <span className="node-tag">Phase 1-4</span>
+                  </div>
+
+                  <div className="atlas-node node-vector">
+                    <div className="node-icon">⚡</div>
+                    <div className="node-info">
+                      <span className="node-name">Vector Engine</span>
+                      <span className="node-desc">Dense ONNX Embeddings & Search Index</span>
+                    </div>
+                    <span className="node-tag">Phase 5</span>
+                  </div>
+
+                  <div className="atlas-node node-insights">
+                    <div className="node-icon">🏛️</div>
+                    <div className="node-info">
+                      <span className="node-name">System Insights</span>
+                      <span className="node-desc">Frameworks, Dependencies & Roles</span>
+                    </div>
+                    <span className="node-tag">Phase 7</span>
+                  </div>
+
+                  <div className="atlas-node node-assistant">
+                    <div className="node-icon">🤖</div>
+                    <div className="node-info">
+                      <span className="node-name">AI Assistant</span>
+                      <span className="node-desc">Grounded Gemini RAG & Citations</span>
+                    </div>
+                    <span className="node-tag">Phase 6</span>
+                  </div>
+
+                  {/* Connecting Data Beams (SVG) */}
+                  <svg className="atlas-connecting-svg" aria-hidden="true">
+                    <line x1="20%" y1="30%" x2="50%" y2="50%" className="data-beam beam-1" />
+                    <line x1="80%" y1="30%" x2="50%" y2="50%" className="data-beam beam-2" />
+                    <line x1="20%" y1="70%" x2="50%" y2="50%" className="data-beam beam-3" />
+                    <line x1="80%" y1="70%" x2="50%" y2="50%" className="data-beam beam-4" />
+                  </svg>
+                </div>
+              </div>
+
+              {/* ── Four Core Capability Landmarks ── */}
+              <div className="capabilities-grid">
+                <div className="capability-card">
+                  <div className="capability-icon-box icon-search">🔍</div>
+                  <div className="capability-content">
+                    <h3 className="capability-title">Dense Semantic Code Search</h3>
+                    <p className="capability-desc">
+                      Search your codebase using natural language concepts (e.g. <em>"Where is authentication handled?"</em>). Ranked matches highlight exact file paths and line ranges.
+                    </p>
+                    <span className="capability-metric">384-d ONNX Vector Search</span>
+                  </div>
+                </div>
+
+                <div className="capability-card">
+                  <div className="capability-icon-box icon-ai">🤖</div>
+                  <div className="capability-content">
+                    <h3 className="capability-title">Grounded AI Assistant</h3>
+                    <p className="capability-desc">
+                      Ask complex architectural questions. CodeAtlas retrieves relevant semantic chunks and generates precise explanations strictly grounded in source code with zero hallucination.
+                    </p>
+                    <span className="capability-metric">Line-by-Line Citations</span>
+                  </div>
+                </div>
+
+                <div className="capability-card">
+                  <div className="capability-icon-box icon-insights">🏛️</div>
+                  <div className="capability-content">
+                    <h3 className="capability-title">Architecture & Dependency Insights</h3>
+                    <p className="capability-desc">
+                      Automatically detect frameworks, libraries, CI/CD pipelines, manifest dependencies (npm, pip, cargo, go), and directory architecture roles in milliseconds.
+                    </p>
+                    <span className="capability-metric">Multi-Ecosystem Detection</span>
+                  </div>
+                </div>
+
+                <div className="capability-card">
+                  <div className="capability-icon-box icon-tree">📁</div>
+                  <div className="capability-content">
+                    <h3 className="capability-title">Repository Explorer & Chunker</h3>
+                    <p className="capability-desc">
+                      Explore safe recursive file trees, inspect source files with language-aware highlighting, and generate deterministic AST code chunks tailored for LLM reasoning.
+                    </p>
+                    <span className="capability-metric">Structure-Aware AST Splitting</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* ── How It Works 3-Step Process ── */}
+              <div className="how-it-works-section">
+                <div className="how-header">
+                  <span className="how-badge">PROCESS</span>
+                  <h2 className="how-title">How CodeAtlas Works</h2>
+                </div>
+
+                <div className="how-steps-grid">
+                  <div className="how-step-card">
+                    <span className="step-number">01</span>
+                    <div className="step-content">
+                      <h4 className="step-heading">Connect & Ingest</h4>
+                      <p className="step-text">
+                        Enter any public GitHub repository URL. CodeAtlas parses the repository tree, detects tech manifests, and prioritizes key entry points.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="how-step-card">
+                    <span className="step-number">02</span>
+                    <div className="step-content">
+                      <h4 className="step-heading">Chunk & Vectorize</h4>
+                      <p className="step-text">
+                        Source files are split into syntax-aware semantic chunks and vectorized locally using dense FastEmbed embeddings.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="how-step-card">
+                    <span className="step-number">03</span>
+                    <div className="step-content">
+                      <h4 className="step-heading">Navigate & Query</h4>
+                      <p className="step-text">
+                        Explore your codebase through ranked semantic search, automatic architectural insights, and citation-backed AI conversations.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </section>
+
+        {/* ── Results ── */}
+        {result && (
+          <div id="url-result" className="result-panel" role="status" aria-live="polite">
 
               {/* Metadata header */}
               <div className="result-header">
@@ -1339,12 +1591,30 @@ export default function App() {
             </div>
           )}
 
-        </section>
-
-        <footer className="footer">
-          CodeAtlas · AI-Powered Codebase Intelligence
+        {/* ── Footer ── */}
+        <footer className="app-footer">
+          <div className="footer-content">
+            <div className="footer-brand">
+              <BrandLogo size={24} />
+              <span className="footer-brand-name">CodeAtlas</span>
+            </div>
+            <p className="footer-tagline">Map Your Code. Master Your System.</p>
+            <div className="footer-links">
+              <a
+                href="https://github.com/Samarth1518/CodeAtlas"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="footer-link"
+              >
+                GitHub Repository
+              </a>
+              <span className="footer-divider">•</span>
+              <span className="footer-copyright">© {new Date().getFullYear()} CodeAtlas</span>
+            </div>
+          </div>
         </footer>
       </main>
-    </>
+    </div>
   )
 }
+
